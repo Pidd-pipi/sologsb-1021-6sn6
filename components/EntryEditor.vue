@@ -3,15 +3,26 @@ import { computed, ref } from 'vue';
 import { useDictionaryStore } from '~/store/dictionary';
 
 const store = useDictionaryStore();
+const emit = defineEmits<{ sources: [] }>();
 const activeTab = ref('basic');
+const attachPick = ref('');
 const entry = computed(() => store.selectedEntry);
 const synonymsText = computed(() => entry.value?.synonyms.join('、') ?? '');
+const entrySources = computed(() => entry.value ? store.entrySources(entry.value) : []);
+const availableSources = computed(() => entry.value ? store.sources.filter((source) => !entry.value!.sourceIds.includes(source.id)) : []);
+const usageCount = (sourceId: string) => store.sourceUsage.get(sourceId)?.length ?? 0;
 
 const eventValue = (event: any) => typeof event === 'string' || typeof event === 'number' ? String(event) : event?.target?.value ?? event?.e?.target?.value ?? event?.value ?? '';
 
 const commitInput = (event: any, field: 'headword' | 'pronunciation' | 'partOfSpeech' | 'definition' | 'notes') => {
   if (!entry.value) return;
   store.updateField(entry.value.id, field, eventValue(event), field);
+};
+
+const attachSource = (value: string | number) => {
+  if (!entry.value || !value) return;
+  store.attachSource(entry.value.id, String(value));
+  attachPick.value = '';
 };
 </script>
 
@@ -78,13 +89,26 @@ const commitInput = (event: any, field: 'headword' | 'pronunciation' | 'partOfSp
 
       <t-tab-panel value="sources" label="来源">
         <div class="editor-scroll">
-          <div class="section-title"><div><h3>文献、录音与调查来源</h3><p>删除或改写引用时会先检查是否影响其他词条。</p></div><t-button size="small" @click="store.addSource(entry.id)">＋ 添加来源</t-button></div>
-          <div v-for="source in entry.sources" :key="source.id" class="subcard source-card">
-            <button class="remove-button" @click="store.removeSource(entry.id, source.id)">×</button>
-            <div class="field-grid two"><label class="field-block"><span>来源名称</span><t-input :default-value="source.title" @blur="store.updateSource(entry.id, source.id, 'title', eventValue($event))" /></label><label class="field-block"><span>链接（可选）</span><t-input :default-value="source.url" @blur="store.updateSource(entry.id, source.id, 'url', eventValue($event))" /></label></div>
-            <label class="field-block"><span>引用信息</span><t-input :default-value="source.citation" @blur="store.updateSource(entry.id, source.id, 'citation', eventValue($event))" /></label>
+          <div class="section-title">
+            <div><h3>引用来源册</h3><p>来源在来源册中统一维护；此处修改会同步到所有引用词条。</p></div>
+            <div class="source-actions">
+              <t-select v-model="attachPick" size="small" filterable clearable placeholder="选择已有来源…" class="attach-select" :popup-props="{ attach: 'body' }" @change="attachSource">
+                <t-option v-for="source in availableSources" :key="source.id" :value="source.id" :label="source.title || source.citation || '未命名来源'" />
+              </t-select>
+              <t-button size="small" @click="store.addSource(entry.id)">＋ 新建来源</t-button>
+              <button class="text-action source-book-link" @click="emit('sources')">来源册</button>
+            </div>
           </div>
-          <t-empty v-if="!entry.sources.length" description="暂未记录来源" />
+          <div v-for="source in entrySources" :key="`${source.id}-${source.updatedAt}`" class="subcard source-card">
+            <button class="remove-button" title="从本词条移除（来源册中保留）" @click="store.detachSource(entry.id, source.id)">×</button>
+            <div class="source-shared-line">
+              <t-tag v-if="usageCount(source.id) > 1" size="small" theme="primary" variant="light">与 {{ usageCount(source.id) - 1 }} 个词条共用</t-tag>
+              <span v-if="usageCount(source.id) > 1">修改后会同步到所有引用词条</span>
+            </div>
+            <div class="field-grid two"><label class="field-block"><span>来源名称</span><t-input :default-value="source.title" @blur="store.updateSource(source.id, 'title', eventValue($event))" /></label><label class="field-block"><span>链接（可选）</span><t-input :default-value="source.url" @blur="store.updateSource(source.id, 'url', eventValue($event))" /></label></div>
+            <label class="field-block"><span>引用信息</span><t-input :default-value="source.citation" @blur="store.updateSource(source.id, 'citation', eventValue($event))" /></label>
+          </div>
+          <t-empty v-if="!entrySources.length" description="暂未引用来源，可新建或从来源册选择" />
         </div>
       </t-tab-panel>
     </t-tabs>

@@ -1,15 +1,17 @@
 import { computed, reactive, ref } from 'vue';
 import { defineStore } from 'pinia';
 import type {
-  AuditRecord, DictionaryEntry, DictionarySnapshot, DuplicatePair, EntryStatus, ReviewComment, VersionRecord
+  AuditRecord, DictionaryEntry, DictionarySnapshot, DuplicatePair, EntryStatus,
+  LegacyDictionaryEntry, ReviewComment, SourceRecord, VersionRecord
 } from '~/types/dictionary';
-import { findDuplicates } from '~/utils/dictionary';
+import { findDuplicates, normalizeEntrySources } from '~/utils/dictionary';
 
 const now = () => new Date().toISOString();
 const uid = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-const seedEntries = (): DictionaryEntry[] => [
+/** 旧版种子数据：来源仍内联在词条里，首次载入时会被整理进来源册并自动合并重复项 */
+const seedEntries = (): LegacyDictionaryEntry[] => [
   {
     id: 'entry-001', headword: 'ŋgɨ³³', pronunciation: 'ŋgɨ˧˧（低平调）', partOfSpeech: '名词', definition: '山间常年不涸的小水潭；也用来比喻安静而可靠的人。',
     dialectVariants: [
@@ -44,7 +46,12 @@ const seedEntries = (): DictionaryEntry[] => [
     id: 'entry-005', headword: 'lo³³', pronunciation: 'lo˧', partOfSpeech: '方向词', definition: '表示向说话者所在位置移动，常与位移动词搭配。', dialectVariants: [], examples: [{ id: 'ex-6', text: 'a³³ mɨ⁵⁵ lo³³.', translation: '到这里来。', source: '语法调查句表 03' }], sources: [{ id: 'src-6', title: '动词方向范畴笔记', citation: '陈某某，2005，第 18 页', url: '' }], synonyms: ['来'], status: 'confirmed', notes: '', createdAt: '2024-09-18T02:00:00.000Z', updatedAt: '2025-01-04T02:00:00.000Z', reviewerComments: []
   },
   {
-    id: 'entry-006', headword: 'tsha⁵⁵', pronunciation: 'tsha˥', partOfSpeech: '名词', definition: '水源；泉水涌出的地方。', dialectVariants: [], examples: [{ id: 'ex-7', text: 'tsha⁵⁵ ʔmɨ⁵⁵ ma³³.', translation: '泉眼在这个地方。', source: '地名调查 2022-07' }], sources: [{ id: 'src-7', title: '村落地名调查', citation: '录音 C-2022-07，00:22:08', url: '' }], synonyms: ['泉眼', '水潭'], status: 'review', notes: '', createdAt: '2025-02-01T02:00:00.000Z', updatedAt: '2025-02-25T02:00:00.000Z',
+    id: 'entry-006', headword: 'tsha⁵⁵', pronunciation: 'tsha˥', partOfSpeech: '名词', definition: '水源；泉水涌出的地方。', dialectVariants: [], examples: [{ id: 'ex-7', text: 'tsha⁵⁵ ʔmɨ⁵⁵ ma³³.', translation: '泉眼在这个地方。', source: '地名调查 2022-07' }],
+    sources: [
+      { id: 'src-7', title: '村落地名调查', citation: '录音 C-2022-07，00:22:08', url: '' },
+      { id: 'src-8', title: '嘎木村发音人访谈', citation: '录音 A-2018-04-17，00:12:31', url: '' }
+    ],
+    synonyms: ['泉眼', '水潭'], status: 'review', notes: '', createdAt: '2025-02-01T02:00:00.000Z', updatedAt: '2025-02-25T02:00:00.000Z',
     reviewerComments: [{ id: 'c-2', field: 'sources', author: '审校·罗老师', message: '请把录音中发言人姓名补到资料来源。', status: 'open', createdAt: '2025-02-25T02:00:00.000Z', replies: [{ id: 'r-1', author: '编辑·阿木', message: '已向调查员索取授权信息，暂以录音编号占位。', createdAt: '2025-02-26T01:00:00.000Z' }] }]
   }
 ];
@@ -54,8 +61,10 @@ const seedAudit: AuditRecord[] = [{
 }];
 
 export const useDictionaryStore = defineStore('dictionary', () => {
+  const seeded = normalizeEntrySources(seedEntries());
   const revision = ref(1);
-  const entries = reactive<DictionaryEntry[]>(seedEntries());
+  const entries = reactive<DictionaryEntry[]>(seeded.entries);
+  const sources = reactive<SourceRecord[]>(seeded.sources);
   const versions = reactive<VersionRecord[]>([]);
   const audit = reactive<AuditRecord[]>(seedAudit);
   const selectedId = ref(entries[0]?.id ?? '');
@@ -71,27 +80,46 @@ export const useDictionaryStore = defineStore('dictionary', () => {
   const persistableSnapshot = computed<DictionarySnapshot>(() => ({
     revision: revision.value,
     entries: clone(entries),
+    sources: clone(sources),
     versions: clone(versions),
     audit: clone(audit)
   }));
   const duplicates = computed<DuplicatePair[]>(() => findDuplicates(entries));
   const openComments = computed(() => entries.reduce((sum, entry) => sum + entry.reviewerComments.filter((comment) => comment.status === 'open').length, 0));
+  const sourceMap = computed(() => new Map(sources.map((source) => [source.id, source])));
+  /** 每条来源被哪些词条引用；引用数量随词条增删、版本恢复自动变化 */
+  const sourceUsage = computed(() => {
+    const usage = new Map<string, DictionaryEntry[]>();
+    entries.forEach((entry) => (entry.sourceIds ?? []).forEach((sourceId) => {
+      if (!sourceMap.value.has(sourceId)) return;
+      const list = usage.get(sourceId) ?? [];
+      list.push(entry);
+      usage.set(sourceId, list);
+    }));
+    return usage;
+  });
   const filteredEntries = computed(() => {
     const term = query.value.trim().toLowerCase();
     return entries.filter((entry) => {
       if (statusFilter.value !== 'all' && entry.status !== statusFilter.value) return false;
       if (dialectFilter.value !== 'all' && !entry.dialectVariants.some((variant) => variant.dialect === dialectFilter.value)) return false;
       if (!term) return true;
-      const haystack = [entry.headword, entry.definition, entry.partOfSpeech, entry.pronunciation, ...entry.synonyms, ...entry.sources.map((source) => source.title)].join(' ').toLowerCase();
+      const haystack = [entry.headword, entry.definition, entry.partOfSpeech, entry.pronunciation, ...entry.synonyms, ...entrySources(entry).map((source) => source.title)].join(' ').toLowerCase();
       return haystack.includes(term);
     });
   });
   const dialects = computed(() => [...new Set(entries.flatMap((entry) => entry.dialectVariants.map((variant) => variant.dialect)))].sort());
 
+  /** 词条引用的来源记录（按来源册最新内容解析，失效引用自动忽略） */
+  function entrySources(entry: DictionaryEntry): SourceRecord[] {
+    return (entry.sourceIds ?? []).map((id) => sourceMap.value.get(id)).filter((source): source is SourceRecord => Boolean(source));
+  }
+
   function snapshot(): DictionarySnapshot {
     return {
       revision: revision.value,
       entries: clone(entries),
+      sources: clone(sources),
       versions: clone(versions),
       audit: clone(audit)
     };
@@ -100,6 +128,7 @@ export const useDictionaryStore = defineStore('dictionary', () => {
   function restore(value: DictionarySnapshot) {
     revision.value = value.revision ?? 1;
     entries.splice(0, entries.length, ...(clone(value.entries ?? [])));
+    sources.splice(0, sources.length, ...(clone(value.sources ?? [])));
     versions.splice(0, versions.length, ...(clone(value.versions ?? [])));
     audit.splice(0, audit.length, ...(clone(value.audit ?? [])));
     if (!entries.some((entry) => entry.id === selectedId.value)) selectedId.value = entries[0]?.id ?? '';
@@ -109,10 +138,11 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     undoStack.value = [...undoStack.value.slice(-49), snapshot()];
     redoStack.value = [];
     const before = clone(entries);
+    const beforeSources = clone(sources);
     mutation();
     revision.value += 1;
     entries.forEach((entry) => { if (entryIds.includes(entry.id)) entry.updatedAt = now(); });
-    versions.unshift({ id: uid('version'), at: now(), action, detail, entryId: entryIds[0], before });
+    versions.unshift({ id: uid('version'), at: now(), action, detail, entryId: entryIds[0], before, beforeSources });
     versions.splice(120);
     audit.unshift({ id: uid('audit'), at: now(), action, detail, entryIds });
     audit.splice(300);
@@ -120,7 +150,7 @@ export const useDictionaryStore = defineStore('dictionary', () => {
 
   function createEntry() {
     const entry: DictionaryEntry = {
-      id: uid('entry'), headword: '新词条', pronunciation: '', partOfSpeech: '', definition: '', dialectVariants: [], examples: [], sources: [], synonyms: [], status: 'draft', notes: '', createdAt: now(), updatedAt: now(), reviewerComments: []
+      id: uid('entry'), headword: '新词条', pronunciation: '', partOfSpeech: '', definition: '', dialectVariants: [], examples: [], sourceIds: [], synonyms: [], status: 'draft', notes: '', createdAt: now(), updatedAt: now(), reviewerComments: []
     };
     commit('新建词条', '创建草稿词条', [entry.id], () => entries.unshift(entry));
     selectedId.value = entry.id;
@@ -184,25 +214,57 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     });
   }
 
-  function addSource(entryId: string) {
-    const entry = entries.find((item) => item.id === entryId);
-    if (!entry) return;
-    commit('新增来源', '添加一条文献或录音来源', [entryId], () => entry.sources.push({ id: uid('source'), title: '', citation: '', url: '' }));
+  /** 在来源册新建来源；传入 entryId 时同时被该词条引用 */
+  function addSource(entryId?: string) {
+    const entry = entryId ? entries.find((item) => item.id === entryId) : undefined;
+    const record: SourceRecord = { id: uid('source'), title: '', citation: '', url: '', createdAt: now(), updatedAt: now() };
+    commit('新增来源', entry ? '新建来源并引用到当前词条' : '在来源册新建来源', entry ? [entry.id] : [], () => {
+      sources.unshift(record);
+      entry?.sourceIds.push(record.id);
+    });
+    return record.id;
   }
 
-  function updateSource(entryId: string, sourceId: string, field: 'title' | 'citation' | 'url', value: string) {
-    const entry = entries.find((item) => item.id === entryId);
-    const source = entry?.sources.find((item) => item.id === sourceId);
-    if (!entry || !source || source[field] === value) return;
-    commit('编辑来源', `${field}发生更新`, [entryId], () => { source[field] = value; });
+  /** 编辑来源册记录；所有引用该来源的词条同步显示最新内容 */
+  function updateSource(sourceId: string, field: 'title' | 'citation' | 'url', value: string) {
+    const record = sources.find((item) => item.id === sourceId);
+    if (!record || record[field] === value) return;
+    const affected = (sourceUsage.value.get(sourceId) ?? []).map((entry) => entry.id);
+    const label = { title: '来源名称', citation: '引用信息', url: '链接' }[field];
+    commit('编辑来源', `${label}发生更新，同步到 ${affected.length} 个引用词条`, affected, () => {
+      record[field] = value;
+      record.updatedAt = now();
+    });
   }
 
-  function removeSource(entryId: string, sourceId: string) {
+  /** 从来源册移除来源；仍被词条引用的来源不能移除 */
+  function removeSource(sourceId: string) {
+    const record = sources.find((item) => item.id === sourceId);
+    if (!record) return false;
+    const usedBy = sourceUsage.value.get(sourceId) ?? [];
+    if (usedBy.length) return false;
+    commit('移除来源', `从来源册移除“${record.title || '未命名来源'}”`, [], () => {
+      const index = sources.findIndex((item) => item.id === sourceId);
+      if (index >= 0) sources.splice(index, 1);
+    });
+    return true;
+  }
+
+  /** 词条引用来源册中已有的来源 */
+  function attachSource(entryId: string, sourceId: string) {
     const entry = entries.find((item) => item.id === entryId);
-    if (!entry) return;
-    commit('删除来源', '移除一条来源', [entryId], () => {
-      const index = entry.sources.findIndex((source) => source.id === sourceId);
-      if (index >= 0) entry.sources.splice(index, 1);
+    const record = sources.find((item) => item.id === sourceId);
+    if (!entry || !record || entry.sourceIds.includes(sourceId)) return;
+    commit('引用来源', `引用已有来源“${record.title || '未命名来源'}”`, [entryId], () => entry.sourceIds.push(sourceId));
+  }
+
+  /** 词条取消引用；来源仍保留在来源册中 */
+  function detachSource(entryId: string, sourceId: string) {
+    const entry = entries.find((item) => item.id === entryId);
+    if (!entry || !entry.sourceIds.includes(sourceId)) return;
+    commit('取消引用来源', '从词条移除来源引用（来源册中保留）', [entryId], () => {
+      const index = entry.sourceIds.indexOf(sourceId);
+      if (index >= 0) entry.sourceIds.splice(index, 1);
     });
   }
 
@@ -247,21 +309,22 @@ export const useDictionaryStore = defineStore('dictionary', () => {
 
   function mergeEntries(targetId: string, sourceIds: string[], selected: Record<string, 'target' | 'source' | 'combine'>) {
     const target = entries.find((entry) => entry.id === targetId);
-    const sources = entries.filter((entry) => sourceIds.includes(entry.id));
-    if (!target || !sources.length) return;
-    commit('合并重复词条', `将 ${sources.length} 个重复词条合并到“${target.headword}”`, [targetId, ...sourceIds], () => {
-      sources.forEach((source) => {
-        const layers: Array<keyof DictionaryEntry> = ['dialectVariants', 'examples', 'sources', 'synonyms', 'reviewerComments'];
+    const sourcesToMerge = entries.filter((entry) => sourceIds.includes(entry.id));
+    if (!target || !sourcesToMerge.length) return;
+    commit('合并重复词条', `将 ${sourcesToMerge.length} 个重复词条合并到“${target.headword}”`, [targetId, ...sourceIds], () => {
+      sourcesToMerge.forEach((source) => {
+        const layers: Array<keyof DictionaryEntry> = ['dialectVariants', 'examples', 'synonyms', 'reviewerComments'];
         layers.forEach((field) => {
           const targetValue = target[field] as unknown[];
           const sourceValue = source[field] as unknown[];
           targetValue.push(...clone(sourceValue));
         });
+        target.sourceIds = [...new Set([...target.sourceIds, ...source.sourceIds])];
       });
       (['headword', 'pronunciation', 'partOfSpeech', 'definition', 'notes'] as const).forEach((field) => {
         const choice = selected[field] ?? 'target';
-        if (choice === 'source') target[field] = sources[0]![field];
-        if (choice === 'combine' && target[field] !== sources[0]![field]) target[field] = `${target[field]}；${sources[0]![field]}`;
+        if (choice === 'source') target[field] = sourcesToMerge[0]![field];
+        if (choice === 'combine' && target[field] !== sourcesToMerge[0]![field]) target[field] = `${target[field]}；${sourcesToMerge[0]![field]}`;
       });
       target.status = 'disputed';
       sourceIds.forEach((id) => {
@@ -291,14 +354,33 @@ export const useDictionaryStore = defineStore('dictionary', () => {
     const version = versions.find((item) => item.id === versionId);
     if (!version) return;
     commit('恢复版本', `恢复 ${new Date(version.at).toLocaleString('zh-CN')} 之前的版本`, [], () => {
-      entries.splice(0, entries.length, ...clone(version.before));
+      if (version.beforeSources) {
+        entries.splice(0, entries.length, ...clone(version.before));
+        sources.splice(0, sources.length, ...clone(version.beforeSources));
+      } else {
+        // 旧版版本记录没有来源册快照：恢复时把内联来源并入当前来源册
+        const normalized = normalizeEntrySources(clone(version.before), clone(sources));
+        entries.splice(0, entries.length, ...normalized.entries);
+        sources.splice(0, sources.length, ...normalized.sources);
+      }
     });
   }
 
   function hydrateFromBrowser() {
     try {
       const raw = localStorage.getItem('sologsb-1021-dictionary-v1');
-      if (raw) restore(JSON.parse(raw) as DictionarySnapshot);
+      if (raw) {
+        const parsed = JSON.parse(raw) as DictionarySnapshot;
+        // 旧词条里相同的内联来源在首次打开时自动合并进来源册
+        const normalized = normalizeEntrySources(parsed.entries ?? [], parsed.sources ?? []);
+        restore({ ...parsed, entries: normalized.entries, sources: normalized.sources });
+        if (normalized.mergedCount > 0) {
+          audit.unshift({
+            id: uid('audit'), at: now(), action: '整理来源册',
+            detail: `首次打开旧数据，自动合并 ${normalized.mergedCount} 条重复来源，引用关系已保留`, entryIds: []
+          });
+        }
+      }
     } catch {
       localStorage.removeItem('sologsb-1021-dictionary-v1');
     } finally {
@@ -311,11 +393,11 @@ export const useDictionaryStore = defineStore('dictionary', () => {
   }
 
   return {
-    revision, entries, versions, audit, selectedId, hydrated, query, statusFilter, dialectFilter, fieldReplyDrafts,
-    selectedEntry, filteredEntries, dialects, duplicates, openComments, persistableSnapshot,
+    revision, entries, sources, versions, audit, selectedId, hydrated, query, statusFilter, dialectFilter, fieldReplyDrafts,
+    selectedEntry, filteredEntries, dialects, duplicates, openComments, persistableSnapshot, sourceUsage, entrySources,
     canUndo: computed(() => undoStack.value.length > 0), canRedo: computed(() => redoStack.value.length > 0),
     createEntry, updateField, setStatus, addVariant, updateVariant, removeVariant, addExample, updateExample, removeExample,
-    addSource, updateSource, removeSource, setSynonyms, addComment, replyComment, toggleComment, deleteEntry, mergeEntries,
-    undo, redo, restoreVersion, hydrateFromBrowser, exportPackage
+    addSource, updateSource, removeSource, attachSource, detachSource, setSynonyms, addComment, replyComment, toggleComment,
+    deleteEntry, mergeEntries, undo, redo, restoreVersion, hydrateFromBrowser, exportPackage
   };
 });

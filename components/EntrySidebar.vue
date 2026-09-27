@@ -2,7 +2,7 @@
 import { useDictionaryStore } from '~/store/dictionary';
 
 const store = useDictionaryStore();
-const emit = defineEmits<{ create: []; duplicates: []; versions: [] }>();
+const emit = defineEmits<{ create: []; duplicates: []; versions: []; sources: [] }>();
 
 const statusMeta = {
   draft: { label: '草稿', theme: 'default' },
@@ -59,6 +59,7 @@ const statusMeta = {
       <t-empty v-if="!store.filteredEntries.length" description="没有符合条件的词条" />
     </div>
     <div class="sidebar-footer">
+      <button class="text-action" @click="emit('sources')"><span>{{ store.sources.length }}</span> 条来源册</button>
       <button class="text-action" @click="emit('duplicates')"><span>{{ store.duplicates.length }}</span> 组疑似重复</button>
       <button class="text-action" @click="emit('versions')"><span>{{ store.versions.length }}</span> 条版本记录</button>
     </div>
