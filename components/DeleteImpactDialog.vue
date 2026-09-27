@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import type { DictionaryEntry } from '~/types/dictionary';
+import { computed } from 'vue';
+import type { DictionaryEntry, DictionarySource } from '~/types/dictionary';
+import { useDictionaryStore } from '~/store/dictionary';
 
 const visible = defineModel<boolean>({ required: true });
 const props = defineProps<{ entry: DictionaryEntry | null; impacts: DictionaryEntry[] }>();
 const emit = defineEmits<{ confirm: [] }>();
+const store = useDictionaryStore();
+
+const entrySources = computed(() => (props.entry?.sourceIds ?? [])
+  .map((id) => store.sourcesById.get(id))
+  .filter((source): source is DictionarySource => Boolean(source)));
+const remaining = (sourceId: string) => Math.max(0, (store.sourceUsage.get(sourceId)?.length ?? 1) - 1);
 </script>
 
 <template>
@@ -20,6 +28,12 @@ const emit = defineEmits<{ confirm: [] }>();
           <span>{{ impact.definition }}</span>
           <small>同义词：{{ impact.synonyms.join('、') || '无' }}</small>
         </article>
+      </div>
+      <div v-if="entrySources.length" class="delete-sources">
+        <strong>来源册引用变化</strong>
+        <p v-for="source in entrySources" :key="source.id">
+          「{{ source.title || '未命名来源' }}」的引用将减为 {{ remaining(source.id) }} 个词条<template v-if="remaining(source.id) === 0">，之后可在来源册中移除</template>
+        </p>
       </div>
       <div class="dialog-actions"><t-button variant="outline" @click="visible = false">取消</t-button><t-button theme="danger" @click="emit('confirm')">仍然删除并记录影响</t-button></div>
     </div>

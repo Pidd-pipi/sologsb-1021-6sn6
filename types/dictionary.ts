@@ -40,7 +40,8 @@ export interface DictionaryEntry {
   definition: string;
   dialectVariants: DialectVariant[];
   examples: ExampleSentence[];
-  sources: DictionarySource[];
+  /** 词条只保存来源 id，来源内容集中存放在共享来源册 sourceLibrary 中 */
+  sourceIds: string[];
   synonyms: string[];
   status: EntryStatus;
   notes: string;
@@ -49,6 +50,12 @@ export interface DictionaryEntry {
   reviewerComments: ReviewComment[];
 }
 
+/** 旧版词条：来源对象直接内嵌在 sources 数组里，首次打开时会并入共享来源册 */
+export type LegacyDictionaryEntry = Omit<DictionaryEntry, 'sourceIds'> & {
+  sourceIds?: string[];
+  sources?: DictionarySource[];
+};
+
 export interface VersionRecord {
   id: string;
   at: string;
@@ -56,6 +63,8 @@ export interface VersionRecord {
   detail: string;
   entryId?: string;
   before: DictionaryEntry[];
+  /** 提交前的来源册快照；旧版本记录可能缺失，恢复时需从内嵌来源迁移 */
+  beforeSources?: DictionarySource[];
 }
 
 export interface AuditRecord {
@@ -69,6 +78,7 @@ export interface AuditRecord {
 export interface DictionarySnapshot {
   revision: number;
   entries: DictionaryEntry[];
+  sourceLibrary: DictionarySource[];
   versions: VersionRecord[];
   audit: AuditRecord[];
 }

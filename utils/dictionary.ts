@@ -1,9 +1,13 @@
-import type { DictionaryEntry, DuplicatePair } from '~/types/dictionary';
+import type { DictionaryEntry, DictionarySource, DuplicatePair } from '~/types/dictionary';
 
 export const normalizeWord = (value: string) => value
   .normalize('NFKC')
   .toLowerCase()
   .replace(/[\s·.'’\-_()[\]{}，。！？、]/g, '');
+
+/** 判断两条来源是否相同：标题、引用信息和链接规范化后完全一致 */
+export const sourceKey = (source: Pick<DictionarySource, 'title' | 'citation' | 'url'>) =>
+  [source.title, source.citation, source.url].map((value) => normalizeWord(value ?? '')).join('␟');
 
 const bigrams = (value: string) => {
   const text = normalizeWord(value);

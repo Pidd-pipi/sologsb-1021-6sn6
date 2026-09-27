@@ -2,7 +2,7 @@
 import { useDictionaryStore } from '~/store/dictionary';
 
 const store = useDictionaryStore();
-const emit = defineEmits<{ create: []; duplicates: []; versions: [] }>();
+const emit = defineEmits<{ create: []; duplicates: []; versions: []; library: [] }>();
 
 const statusMeta = {
   draft: { label: '草稿', theme: 'default' },
@@ -60,6 +60,7 @@ const statusMeta = {
     </div>
     <div class="sidebar-footer">
       <button class="text-action" @click="emit('duplicates')"><span>{{ store.duplicates.length }}</span> 组疑似重复</button>
+      <button class="text-action" @click="emit('library')"><span>{{ store.sourceLibrary.length }}</span> 条共享来源</button>
       <button class="text-action" @click="emit('versions')"><span>{{ store.versions.length }}</span> 条版本记录</button>
     </div>
   </aside>
